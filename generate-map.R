@@ -1,5 +1,10 @@
+library(tidyverse)
+library(tidycensus)
+library(magrittr)
+library(sf)
+library(viridis)
 
-
+#function to generate clean tempature maps
 generate_temp_map <- function(raw_data) {
   map <- raw_data  %>%
     filter(!STATEFP %in% c("02", "15")) %>%
@@ -29,7 +34,6 @@ generate_temp_map <- function(raw_data) {
           axis.title.x = element_blank(),
           axis.title.y = element_blank(),
           panel.border = element_blank(),
-          #panel.grid = element_blank(),
           panel.grid.major = element_line(colour = NA),
           panel.grid.minor = element_line(colour = NA),
           panel.background = element_rect(fill = "transparent",colour = NA),
@@ -37,19 +41,14 @@ generate_temp_map <- function(raw_data) {
   return(map)
 }
 
+#reading the weather data in for 3-21-2018
+weather_data <- read_csv("data/weather_data.csv")
 
-weather_data <- read_feather(path = "data/2018-weather.feather")
+#reading in the US stations
+just_usa <- read_csv("data/just_usa_stations.csv")
 
-#just the US stations
-just_usa <- station_list %>% filter(grepl("US", id))
-
-# pulling all of the tracts with the population, makes it easier to join data too
-totalpop_sf <- reduce(
-  map(state_abb[1:51], function(x) {
-    get_acs(geography = "tract", variables = "B01003_001", state = x, geometry = TRUE, keep_geo_vars = TRUE)
-  }), 
-  rbind
-)
+#getting state codes to read in census data
+state_abb <- fips_codes$state %>% unique()
 
 # pulling all of the counties with the population, makes it easier to join data too
 totalpop_sf_county <- reduce(
@@ -59,20 +58,19 @@ totalpop_sf_county <- reduce(
   rbind
 )
 
-#converting stations into sf object to allow us to joing it to the tract data
-usa_station_points <- just_usa %>% st_as_sf(coords = c("longitude", "latitude"), crs = st_crs(totalpop_sf))
+#converting stations into sf object to allow us to join it to the counry data
+usa_station_points <- just_usa %>% st_as_sf(coords = c("longitude", "latitude"), crs = st_crs(totalpop_sf_county))
 
-#joining weather stations with census tracks
+#joining weather stations with census counties
 station_census_tracks <- st_join(usa_station_points, totalpop_sf_county, largest = TRUE, left = FALSE)
 
-str(station_census_tracks)
-
+#used to convert temparues
 c_to_f <- function(c){
   ((c/10)*9/5)+32
 }
 
 
-
+#used to find the average tempature for the surroundings areas
 get_neigboor_avg_temp <- function(row_id, new_data) {
   near_area <- adj[[row_id]]
   avg_temp <- new_data %>% 
@@ -92,14 +90,13 @@ single_day <- weather_data %>%
   filter(date == date_value, element == weather_element) %>%
   left_join(station_census_tracks, by = c("id" = "id")) %>%
   mutate(tmax = c_to_f(value))
-print("data summerized")
 
 #getting the average tempature by specific track  
 value_by_tract <- single_day %>% 
   group_by(NAME.y) %>%
   summarise(tmax_avg = mean(tmax, na.rm = TRUE))
-print("data summerized more")
 
+#joining the county shape files with the tempatures 
 value_and_geo <- totalpop_sf_county %>% 
   left_join(value_by_tract) %>%
   mutate(row_id = 1:nrow(.))
@@ -108,13 +105,9 @@ value_and_geo <- totalpop_sf_county %>%
 unfilled_map <- generate_temp_map(value_and_geo)
 
 #saving the map
-ggsave(filename = "missing-value-map.png", plot = unfilled_map, units = "in", height = 8, width = 8, device = "png")
+ggsave(filename = "plots/missing-value-map.png", plot = unfilled_map, units = "in", height = 8, width = 8, device = "png")
 
-
-
-
-
-#creates vector of each tract and the its nearest neihborhood
+#creates vector of each counry and the it's nearest neihborhood
 adj <- st_touches(value_and_geo)  
 
 #filter for all the trackis with a missing tempature
@@ -142,17 +135,14 @@ unfilled_map_stage_one <- generate_temp_map(filled_temp_data_a)
 ggsave(filename = "step-one-missing-value-map.png", plot = unfilled_map_stage_one, units = "in", height = 8, width = 8, device = "png")
 
 
-
 #looking for missing rows
 rest_of_missing_temp <- filled_temp_data_a %>% filter(is.na(tmax_avg)) %>% nrow()
 
-
-filled_temp_data_a %>% filter(is.na(tmax_avg)) %>% View()
 #looping through the rest of the data to find missing valeues
 
 #each loop takes one more pass at filling in missing data.
 
-#in there are tracts that are in the middle of tracts that 
+#if there are tracts that are in the middle of tracts that 
 if(rest_of_missing_temp != 0) {
   print("Need to loop through the nearest hoods and find average tempature.")
 }
@@ -188,11 +178,4 @@ while(rest_of_missing_temp != 0) {
 full_map <- generate_temp_map(filled_temp_data) 
 
 #saving the map
-ggsave(filename = "not-missing-value-map.png", plot = full_map, units = "in", height = 8, width = 8, device = "png")
-
-
-
-
-
-
-
+ggsave(filename = "plots/not-missing-value-map.png", plot = full_map, units = "in", height = 8, width = 8, device = "png")
